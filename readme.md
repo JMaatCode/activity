@@ -1,60 +1,178 @@
-<p align="center"><img src="https://laravel.com/assets/img/components/logo-laravel.svg"></p>
+- 搭建可扩展laravel活动框架
 
-<p align="center">
-<a href="https://travis-ci.org/laravel/framework"><img src="https://travis-ci.org/laravel/framework.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://poser.pugx.org/laravel/framework/d/total.svg" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://poser.pugx.org/laravel/framework/v/stable.svg" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://poser.pugx.org/laravel/framework/license.svg" alt="License"></a>
-</p>
+背景：有大量一批活动项目，周期短，用完即弃。
 
-## About Laravel
+需求：需要一个可插件式开发的架构，使得各个活动自己互不影响，"即插即拔"。
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel attempts to take the pain out of development by easing common tasks used in the majority of web projects, such as:
+选型：框架 laravel5.6、存储数据库 MongoDB（灵活的数据结构）
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+实现：
+1. 在app目录下新建插件目录PlugIns，在此目录下，每个文件代表一个活动。
+2. 创建插件模板Test，后续插件复制模板开发。目录结构如下：
+```
+Test{
+    Config:{
+        database.php
+    },
+    Controllers:{
+        TestController.php
+    },
+    Models:{
+        BaseModel.php,
+        TestModel.php
+    },
+    Views:{
+        test:{
+            test.blade.php
+        }
+    },
+    route.php
+}
+PlugInsController.php
+```
+3. 先从路由出发：
 
-Laravel is accessible, yet powerful, providing tools needed for large, robust applications.
+routes/web.php 引入plugins.php插件路由，读取每个活动项目下的路由文件route.php：
+```
+$dirroot = realpath(__DIR__.'/../app/PlugIns');
+$dir_handle = opendir($dirroot);
+while($dir = readdir($dir_handle)){
+    if($dir != '.' && $dir != '..' && is_dir($dirroot.'/'.$dir)){
+        $path = $dirroot.'/'.$dir.'/'.'route.php';
+        if(file_exists($path)){
+            include $path;
+        }
+    }
+}
+```
+Test模板路由文件route.php:
+```
+Route::get('test','\\App\\PlugIns\\Test\\Controllers\\TestController@test');
+```
+访问http://my.activity.com/test 到TestController控制器下的Test方法。
+4. 数据库配置
 
-## Learning Laravel
+①打开php扩展，支持MongoDB 
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of any modern web application framework, making it a breeze to get started learning the framework.
+②配置config/database.php文件,读取每个活动项目下的数据库配置文件Config/database.php
+```
+$database = [];
+//引入plugin 的数据库配置
+$dirroot = realpath(__DIR__.'/../app/PlugIns');
+$dir_handle = opendir($dirroot);
+while ($dir = readdir($dir_handle)){
+    if($dir != '.' && $dir != '..' && is_dir($dirroot.'/'.$dir)){
+        $path = $dirroot.'/'.$dir.'/Config/database.php';
+        if(file_exists($path)){
+            include $path;
+        }
+    }
+}
 
-If you're not in the mood to read, [Laracasts](https://laracasts.com) contains over 1100 video tutorials on a range of topics including Laravel, modern PHP, unit testing, JavaScript, and more. Boost the skill level of yourself and your entire team by digging into our comprehensive video library.
+return $database;
+```
+Test模板数据库配置文件Config/database.php
+```
+//服务器配置
+$host = env('MONGO_DB_HOST','127.0.0.1');
+if(strpos($host,',')){
+    $host = explode(',',$host);
+}
+//集群主从复制配置
+$replicaSet = env('MONGO_DB_REPLICASET',false);
+$options = [];
+if($replicaSet){
+    $options = [
+        'replicaSet' => $replicaSet,
+    ];
+}
+//加入数据库配置 为每个活动创建不同的数据库连接名，配置不同的数据库（例：test）
+$database['connections']['test'] = [
+    'driver' => 'mongodb',
+    'host' => $host,
+    'port' => env('MONGO_DB_PORT',27017),
+    'database' => 'test',
+    'options' => $options
+];
+```
+配置基础model，支持MongoDB
+```
+namespace App\Models;
+use Jenssegers\Mongodb\Eloquent\Model as Eloquent;
+class BaseModel extends Eloquent
+{
+    protected $connection = 'mongodb';
+    protected $guarded = [];
+}
+```
+Test模板的Models文件继承基础model，配置连接
+```
+namespace App\PlugIns\Test\Models;
+class BaseModel extends \App\Models\BaseModel
+{
+    protected $connection = 'test';
+}
+```
+创建TestModel，配置数据表
+```
+namespace App\PlugIns\Test\Models;
+class TestModel extends BaseModel
+{
+    protected $table = 'test';
+}
+```
+在控制器调用model
+```
+namespace App\PlugIns\Test\Controllers;
+use App\PlugIns\Test\Models\TestModel;
+class TestController
+{
+    public function Test(){
+        $testModel = new TestModel();
+        $testModel->create(['id'=>1,'name'=>'test']);
+        $data = TestModel::get()->toArray();
+        dd($data);
+    }
+}
+```
+5. 引入模板文件
+创建基础PlugInsController，所有活动的控制器继承基础控制器
+```
+namespace App\PlugIns;
+use Illuminate\Support\Facades\View;
+class PlugInsController
+{
+    protected $view_path;
+    protected function view($view,$data = []){
+        $path = $this->view_path . str_replace('.','/',$view) . '.blade.php';
+        //View::getFacadeRoot() 返回View对象
+        return View::getFacadeRoot()->file($path,$data);
+    }
+}
+```
+Test模板下的控制器继承基础控制器
+```
+namespace App\PlugIns\Test\Controllers;
+use App\PlugIns\PlugInsController;
+use App\PlugIns\Test\Models\TestModel;
+class TestController extends PlugInsController
+{
+    function __construct()
+    {
+        //配置模板文件存放目录
+        $this->view_path = dirname(__FILE__) . '/../Views/test/';
+    }
 
-## Laravel Sponsors
-
-We would like to extend our thanks to the following sponsors for helping fund on-going Laravel development. If you are interested in becoming a sponsor, please visit the Laravel [Patreon page](https://patreon.com/taylorotwell):
-
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[Cubet Techno Labs](https://cubettech.com)**
-- **[British Software Development](https://www.britishsoftware.co)**
-- [Fragrantica](https://www.fragrantica.com)
-- [SOFTonSOFA](https://softonsofa.com/)
-- [User10](https://user10.com)
-- [Soumettre.fr](https://soumettre.fr/)
-- [CodeBrisk](https://codebrisk.com)
-- [1Forge](https://1forge.com)
-- [TECPRESSO](https://tecpresso.co.jp/)
-- [Runtime Converter](http://runtimeconverter.com/)
-- [WebL'Agence](https://weblagence.com/)
-- [Invoice Ninja](https://www.invoiceninja.com)
-
-## Contributing
-
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+    public function Test(){
+        $testModel = new TestModel();
+        $testModel->create(['id'=>1,'name'=>'test']);
+        $data = TestModel::get()->toArray();
+        return $this->view('test',['data'=>$data]);
+    }
+}
+```
+Test模板下的视图Views/test/test.blade.php
+```
+echo '<pre>';
+print_r($data);
+```
